@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Crop Disease Classification Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        .upload-area {
+            transition: all 0.3s ease;
+        }
+        .upload-area.dragover {
+            background-color: #dbeafe;
+            border-color: #3b82f6;
+            transform: scale(1.02);
+        }
+        .result-card {
+            animation: slideIn 0.5s ease-out;
+        }
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        .confidence-bar {
+            transition: width 0.8s ease-out;
+        }
+        .pulse {
+            animation: pulse 2s infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+    </style>
+</head>
+<body class="bg-gradient-to-br from-green-50 to-blue-50 min-h-screen">
+    <!-- Header -->
+    <header class="bg-white shadow-lg border-b border-green-200">
+        <div class="container mx-auto px-4 py-4">
+            <div class="flex items-center justify-between">
+                <div class="flex items-center space-x-3">
+                    <i class="fas fa-seedling text-green-600 text-2xl"></i>
+                    <h1 class="text-2xl font-bold text-gray-800">Crop Disease Classification</h1>
+                </div>
+                <div class="flex items-center space-x-4">
+                    <span id="status-indicator" class="flex items-center">
+                        <span class="w-2 h-2 bg-gray-400 rounded-full mr-2"></span>
+                        <span class="text-sm text-gray-600">Checking API...</span>
+                    </span>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="container mx-auto px-4 py-8">
+        <div class="grid lg:grid-cols-2 gap-8">
+            <!-- Upload Section -->
+            <div class="bg-white rounded-xl shadow-xl p-6">
+                <h2 class="text-xl font-semibold text-gray-800 mb-6 flex items-center">
+                    <i class="fas fa-upload text-blue-500 mr-2"></i>
+                    Upload Crop Image
+                </h2>
+                
+                <!-- Crop Type Selection -->
+                <div class="mb-6">
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Crop Type (Optional)</label>
+                    <select id="crop-type" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+                        <option value="">Auto-detect</option>
+                        <option value="wheat">Wheat</option>
+                        <option value="maize">Maize (Corn)</option>
+                    </select>
+                </div>
+
+                <!-- Upload Area -->
+                <div id="upload-area" class="upload-area border-3 border-dashed border-gray-300 rounded-xl p-8 text-center cursor-pointer hover:border-blue-400 transition-all">
+                    <i class="fas fa-cloud-upload-alt text-4xl text-gray-400 mb-4"></i>
+                    <p class="text-gray-600 mb-2">Drag & drop your crop image here</p>
+                    <p class="text-sm text-gray-500 mb-4">or</p>
+                    <button class="bg-blue-500 text-white px-6 py-2 rounded-lg hover:bg-blue-600 transition-colors">
+                        Browse Files
+                    </button>
+                    <p class="text-xs text-gray-500 mt-4">Supported formats: PNG, JPG, JPEG, GIF (Max 16MB)</p>
+                    <input type="file" id="file-input" class="hidden" accept="image/*">
+                </div>
+
+                <!-- Image Preview -->
+                <div id="image-preview" class="hidden mt-6">
+                    <h3 class="text-sm font-medium text-gray-700 mb-2">Preview</h3>
+                    <div class="relative">
+                        <img id="preview-img" src="" alt="Preview" class="w-full h-48 object-cover rounded-lg">
+                        <button id="clear-image" class="absolute top-2 right-2 bg-red-500 text-white p-2 rounded-full hover:bg-red-600 transition-colors">
+                            <i class="fas fa-times"></i>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Analyze Button -->
+                <button id="analyze-btn" class="w-full mt-6 bg-green-500 text-white py-3 rounded-lg font-semibold hover:bg-green-600 transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed" disabled>
+                    <i class="fas fa-search mr-2"></i>
+                    Analyze Image
+                </button>
+            </div>
+
+            <!-- Results Section -->
+            <div class="bg-white rounded-xl shadow-xl p-6">
+                <h2 class="text-xl font-semibold text-gray-800 mb-6 flex items-center">
+                    <i class="fas fa-chart-line text-green-500 mr-2"></i>
+                    Analysis Results
+                </h2>
+
+                <!-- Loading State -->
+                <div id="loading" class="hidden text-center py-12">
+                    <div class="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-green-500"></div>
+                    <p class="mt-4 text-gray-600">Analyzing image...</p>
+                </div>
+
+                <!-- Results Content -->
+                <div id="results-content" class="hidden">
+                    <!-- Result will be inserted here -->
+                </div>
+
+                <!-- Empty State -->
+                <div id="empty-state" class="text-center py-12">
+                    <i class="fas fa-microscope text-6xl text-gray-300 mb-4"></i>
+                    <p class="text-gray-500">Upload an image to see analysis results</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Model Info Section -->
+        <div class="mt-8 bg-white rounded-xl shadow-xl p-6">
+            <h2 class="text-xl font-semibold text-gray-800 mb-4 flex items-center">
+                <i class="fas fa-info-circle text-blue-500 mr-2"></i>
+                Model Information
+            </h2>
+            <div id="model-info" class="grid md:grid-cols-2 gap-4">
+                <div class="text-center py-8">
+                    <div class="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+                    <p class="mt-2 text-gray-600">Loading model info...</p>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        // Global variables
+        let selectedFile = null;
+        let apiUrl = 'http://localhost:5000';
+
+        // DOM elements
+        const uploadArea = document.getElementById('upload-area');
+        const fileInput = document.getElementById('file-input');
+        const imagePreview = document.getElementById('image-preview');
+        const previewImg = document.getElementById('preview-img');
+        const clearImageBtn = document.getElementById('clear-image');
+        const analyzeBtn = document.getElementById('analyze-btn');
+        const loading = document.getElementById('loading');
+        const resultsContent = document.getElementById('results-content');
+        const emptyState = document.getElementById('empty-state');
+        const statusIndicator = document.getElementById('status-indicator');
+        const modelInfo = document.getElementById('model-info');
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            checkApiHealth();
+            loadModelInfo();
+            setupEventListeners();
+        });
+
+        // Event Listeners
+        function setupEventListeners() {
+            // Upload area click
+            uploadArea.addEventListener('click', () => fileInput.click());
+            
+            // File input change
+            fileInput.addEventListener('change', handleFileSelect);
+            
+            // Drag and drop
+            uploadArea.addEventListener('dragover', handleDragOver);
+            uploadArea.addEventListener('dragleave', handleDragLeave);
+            uploadArea.addEventListener('drop', handleDrop);
+            
+            // Clear image
+            clearImageBtn.addEventListener('click', clearImage);
+            
+            // Analyze button
+            analyzeBtn.addEventListener('click', analyzeImage);
+        }
+
+        // File handling
+        function handleFileSelect(e) {
+            const file = e.target.files[0];
+            if (file) {
+                processFile(file);
+            }
+        }
+
+        function handleDragOver(e) {
+            e.preventDefault();
+            uploadArea.classList.add('dragover');
+        }
+
+        function handleDragLeave(e) {
+            e.preventDefault();
+            uploadArea.classList.remove('dragover');
+        }
+
+        function handleDrop(e) {
+            e.preventDefault();
+            uploadArea.classList.remove('dragover');
+            
+            const files = e.dataTransfer.files;
+            if (files.length > 0) {
+                processFile(files[0]);
+            }
+        }
+
+        function processFile(file) {
+            // Validate file type
+            if (!file.type.startsWith('image/')) {
+                showNotification('Please select an image file', 'error');
+                return;
+            }
+
+            // Validate file size (16MB)
+            if (file.size > 16 * 1024 * 1024) {
+                showNotification('File size must be less than 16MB', 'error');
+                return;
+            }
+
+            selectedFile = file;
+            displayImagePreview(file);
+            analyzeBtn.disabled = false;
+        }
+
+        function displayImagePreview(file) {
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                previewImg.src = e.target.result;
+                imagePreview.classList.remove('hidden');
+            };
+            reader.readAsDataURL(file);
+        }
+
+        function clearImage() {
+            selectedFile = null;
+            fileInput.value = '';
+            imagePreview.classList.add('hidden');
+            analyzeBtn.disabled = true;
+            resetResults();
+        }
+
+        // API calls
+        async function checkApiHealth() {
+            try {
+                const response = await fetch(`${apiUrl}/health`);
+                const data = await response.json();
+                
+                if (response.ok) {
+                    updateStatus('API Connected', 'success');
+                } else {
+                    updateStatus('API Error', 'error');
+                }
+            } catch (error) {
+                updateStatus('API Offline', 'error');
+            }
+        }
+
+        async function loadModelInfo() {
+            try {
+                const response = await fetch(`${apiUrl}/models/info`);
+                const data = await response.json();
+                
+                if (response.ok) {
+                    displayModelInfo(data);
+                } else {
+                    modelInfo.innerHTML = '<p class="text-red-500">Error loading model information</p>';
+                }
+            } catch (error) {
+                modelInfo.innerHTML = '<p class="text-red-500">Unable to connect to API</p>';
+            }
+        }
+
+        function displayModelInfo(data) {
+            const wheatInfo = data.wheat || {};
+            const maizeInfo = data.maize || {};
+            
+            modelInfo.innerHTML = `
+                <div class="bg-gray-50 rounded-lg p-4">
+                    <h3 class="font-semibold text-gray-800 mb-2">
+                        <i class="fas fa-wheat-awn text-yellow-600 mr-2"></i>
+                        Wheat Model
+                    </h3>
+                    <div class="space-y-1 text-sm">
+                        <p class="flex justify-between">
+                            <span>Status:</span>
+                            <span class="${wheatInfo.loaded ? 'text-green-600' : 'text-red-600'}">
+                                ${wheatInfo.loaded ? 'Loaded' : 'Not Available'}
+                            </span>
+                        </p>
+                        ${wheatInfo.classes ? `<p>Classes: ${wheatInfo.classes.length}</p>` : ''}
+                    </div>
+                </div>
+                <div class="bg-gray-50 rounded-lg p-4">
+                    <h3 class="font-semibold text-gray-800 mb-2">
+                        <i class="fas fa-corn text-yellow-600 mr-2"></i>
+                        Maize Model
+                    </h3>
+                    <div class="space-y-1 text-sm">
+                        <p class="flex justify-between">
+                            <span>Status:</span>
+                            <span class="${maizeInfo.loaded ? 'text-green-600' : 'text-red-600'}">
+                                ${maizeInfo.loaded ? 'Loaded' : 'Not Available'}
+                            </span>
+                        </p>
+                        ${maizeInfo.classes ? `<p>Classes: ${maizeInfo.classes.length}</p>` : ''}
+                    </div>
+                </div>
+            `;
+        }
+
+        async function analyzeImage() {
+            if (!selectedFile) return;
+
+            const cropType = document.getElementById('crop-type').value;
+            
+            // Show loading
+            loading.classList.remove('hidden');
+            resultsContent.classList.add('hidden');
+            emptyState.classList.add('hidden');
+            analyzeBtn.disabled = true;
+
+            try {
+                const formData = new FormData();
+                formData.append('file', selectedFile);
+                if (cropType) {
+                    formData.append('crop_type', cropType);
+                }
+
+                const response = await fetch(`${apiUrl}/predict`, {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    displayResults(data);
+                } else {
+                    throw new Error(data.error || 'Analysis failed');
+                }
+            } catch (error) {
+                showNotification(`Error: ${error.message}`, 'error');
+                resetResults();
+            } finally {
+                loading.classList.add('hidden');
+                analyzeBtn.disabled = false;
+            }
+        }
+
+        function displayResults(result) {
+            emptyState.classList.add('hidden');
+            resultsContent.classList.remove('hidden');
+
+            const healthStatus = result.health_status || 'unknown';
+            const confidence = result.confidence || 0;
+            const diseaseName = result.disease_name || 'None';
+            const cropType = result.crop_type || 'Unknown';
+            const allProbabilities = result.all_probabilities || {};
+
+            // Determine status color
+            let statusColor, statusIcon, statusBg;
+            if (healthStatus === 'healthy') {
+                statusColor = 'text-green-600';
+                statusIcon = 'fa-check-circle';
+                statusBg = 'bg-green-100';
+            } else {
+                statusColor = 'text-red-600';
+                statusIcon = 'fa-exclamation-triangle';
+                statusBg = 'bg-red-100';
+            }
+
+            resultsContent.innerHTML = `
+                <div class="result-card space-y-6">
+                    <!-- Main Result -->
+                    <div class="${statusBg} rounded-lg p-6 text-center">
+                        <i class="fas ${statusIcon} text-4xl ${statusColor} mb-3"></i>
+                        <h3 class="text-2xl font-bold ${statusColor} capitalize">${healthStatus}</h3>
+                        <p class="text-gray-600 mt-1">Crop Type: <span class="font-semibold">${cropType}</span></p>
+                        ${diseaseName !== 'None' ? `<p class="text-gray-600 mt-1">Disease: <span class="font-semibold">${diseaseName}</span></p>` : ''}
+                    </div>
+
+                    <!-- Confidence -->
+                    <div>
+                        <div class="flex justify-between items-center mb-2">
+                            <span class="text-sm font-medium text-gray-700">Confidence</span>
+                            <span class="text-sm font-bold text-gray-900">${(confidence * 100).toFixed(1)}%</span>
+                        </div>
+                        <div class="w-full bg-gray-200 rounded-full h-3">
+                            <div class="confidence-bar bg-gradient-to-r from-blue-500 to-green-500 h-3 rounded-full" 
+                                 style="width: ${confidence * 100}%"></div>
+                        </div>
+                    </div>
+
+                    <!-- Probability Breakdown -->
+                    ${Object.keys(allProbabilities).length > 1 ? `
+                        <div>
+                            <h4 class="text-sm font-semibold text-gray-700 mb-3">Probability Breakdown</h4>
+                            <div class="space-y-2">
+                                ${Object.entries(allProbabilities)
+                                    .sort((a, b) => b[1] - a[1])
+                                    .slice(0, 5)
+                                    .map(([className, prob]) => `
+                                        <div class="flex justify-between items-center">
+                                            <span class="text-sm text-gray-600 truncate flex-1">${className}</span>
+                                            <div class="flex items-center ml-2">
+                                                <div class="w-24 bg-gray-200 rounded-full h-2 mr-2">
+                                                    <div class="bg-blue-500 h-2 rounded-full" style="width: ${prob * 100}%"></div>
+                                                </div>
+                                                <span class="text-xs font-medium text-gray-700 w-12 text-right">${(prob * 100).toFixed(1)}%</span>
+                                            </div>
+                                        </div>
+                                    `).join('')}
+                            </div>
+                        </div>
+                    ` : ''}
+                </div>
+            `;
+        }
+
+        function resetResults() {
+            resultsContent.classList.add('hidden');
+            emptyState.classList.remove('hidden');
+        }
+
+        function updateStatus(text, type) {
+            const indicator = statusIndicator.querySelector('span:first-child');
+            const label = statusIndicator.querySelector('span:last-child');
+            
+            label.textContent = text;
+            
+            // Update indicator color
+            indicator.className = 'w-2 h-2 rounded-full mr-2';
+            if (type === 'success') {
+                indicator.classList.add('bg-green-500');
+            } else if (type === 'error') {
+                indicator.classList.add('bg-red-500');
+            } else {
+                indicator.classList.add('bg-gray-400');
+            }
+        }
+
+        function showNotification(message, type) {
+            // Create notification element
+            const notification = document.createElement('div');
+            notification.className = `fixed top-4 right-4 p-4 rounded-lg shadow-lg z-50 ${
+                type === 'error' ? 'bg-red-500 text-white' : 'bg-green-500 text-white'
+            }`;
+            notification.innerHTML = `
+                <div class="flex items-center">
+                    <i class="fas ${type === 'error' ? 'fa-exclamation-circle' : 'fa-check-circle'} mr-2"></i>
+                    <span>${message}</span>
+                </div>
+            `;
+            
+            document.body.appendChild(notification);
+            
+            // Remove after 3 seconds
+            setTimeout(() => {
+                notification.remove();
+            }, 3000);
+        }
+    </script>
+</body>
+</html>
