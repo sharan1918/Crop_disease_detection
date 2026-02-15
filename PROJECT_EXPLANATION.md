@@ -77,7 +77,7 @@ Think of this like teaching a computer to be a plant expert:
 │   Front-end     │    │   API Gateway    │    │   ML Models     │
 │                 │    │                  │    │                 │
 │ • Web Interface │◄──►│ • Flask Server   │◄──►│ • Wheat Model   │
-│ • Mobile App    │    │ • Image Processing│    │ • Maize Model   │
+│ • Mobile App    │    │ • Image Processing│    │ • Maize Model  │
 │ • Upload Tools  │    │ • Response Format│    │ • Inference     │
 └─────────────────┘    └──────────────────┘    └─────────────────┘
 ```
