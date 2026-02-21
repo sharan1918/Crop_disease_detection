@@ -36,23 +36,27 @@ class CropDiseasePredictor:
         """Load trained models and label encoders"""
         logger.info("Starting model loading...")
         try:
-            # Load maize model (the quick model we just trained)
-            if os.path.exists('models/quick_maize_model.h5'):
+            import json
+            # Load maize model
+            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            model_path = os.path.join(base_dir, 'Ml_Models', 'maize_disease_model.h5')
+            json_path = os.path.join(base_dir, 'Ml_Models', 'maize_class_indices.json')
+            
+            if os.path.exists(model_path):
                 try:
-                    logger.info("Loading maize model from models/quick_maize_model.h5")
-                    self.maize_model = tf.keras.models.load_model('models/quick_maize_model.h5')
+                    logger.info(f"Loading maize model from {model_path}")
+                    self.maize_model = tf.keras.models.load_model(model_path)
                     logger.info("Maize model loaded successfully")
                     
-                    with open('data/maize/processed/label_encoder.pkl', 'rb') as f:
-                        self.maize_label_encoder = pickle.load(f)
-                    with open('data/maize/processed/classes.txt', 'r') as f:
-                        self.maize_classes = [line.strip() for line in f.readlines()]
+                    with open(json_path, 'r') as f:
+                        indices = json.load(f)
+                        self.maize_classes = [k for k, v in sorted(indices.items(), key=lambda item: item[1])]
                     logger.info(f"Maize classes loaded: {self.maize_classes}")
                 except Exception as e:
                     logger.error(f"Failed to load maize model: {e}")
                     self.maize_model = None
             else:
-                logger.warning("Maize model file not found: models/quick_maize_model.h5")
+                logger.warning(f"Maize model file not found: {model_path}")
                 
         except Exception as e:
             logger.exception(f"Error loading models: {e}")
@@ -78,8 +82,9 @@ class CropDiseasePredictor:
             img = cv2.resize(img, target_size)
             logger.debug(f"Resized image to: {target_size}")
             
-            # Normalize
-            img = img.astype(np.float32) / 255.0
+            # Preprocess using ResNet50
+            img = img.astype(np.float32)
+            img = tf.keras.applications.resnet.preprocess_input(img)
             
             # Add batch dimension
             img = np.expand_dims(img, axis=0)

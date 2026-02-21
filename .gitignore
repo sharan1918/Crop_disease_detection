@@ -161,3 +161,8 @@ kaggle.json
 # Temporary files
 *.tmp
 *.temp
+
+# Large data and model folders
+Full_dataset/
+Ml_Models/
+
