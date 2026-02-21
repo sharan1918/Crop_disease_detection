@@ -188,7 +188,7 @@ class CropDiseasePredictor:
             }
 
         # Reject low-confidence predictions (likely not a valid crop image)
-        CONFIDENCE_THRESHOLD = 0.90
+        CONFIDENCE_THRESHOLD = 0.80
         if confidence < CONFIDENCE_THRESHOLD:
             logger.warning(f"Confidence {confidence:.4f} is below threshold {CONFIDENCE_THRESHOLD}. Image may not be a valid maize crop image.")
             return {
