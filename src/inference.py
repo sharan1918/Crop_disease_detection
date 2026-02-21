@@ -178,8 +178,17 @@ class CropDiseasePredictor:
         
         logger.info(f"Prediction: {predicted_class} with confidence {confidence:.4f}")
         
+        # Check if the class is "Others" (non-crop image)
+        if predicted_class.lower() == "others":
+            logger.warning(f"Image classified as 'Others' with confidence {confidence:.4f}. It is likely not a valid maize crop image.")
+            return {
+                "error": "This does not appear to be a valid maize/corn crop image. Please upload a clear image of a maize leaf.",
+                "confidence": confidence,
+                "note": "Image rejected because it was classified as 'Others' (non-crop)"
+            }
+
         # Reject low-confidence predictions (likely not a valid crop image)
-        CONFIDENCE_THRESHOLD = 0.92
+        CONFIDENCE_THRESHOLD = 0.90
         if confidence < CONFIDENCE_THRESHOLD:
             logger.warning(f"Confidence {confidence:.4f} is below threshold {CONFIDENCE_THRESHOLD}. Image may not be a valid maize crop image.")
             return {
