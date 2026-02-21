@@ -172,6 +172,9 @@ def predict():
         # Check for prediction errors
         if "error" in result:
             logger.error(f"Prediction error: {result['error']}")
+            # If it's a rejection (not a valid crop image), return 400 instead of 500
+            if result.get("note") == "Image rejected due to low confidence":
+                return jsonify(result), 400
             return jsonify(result), 500
         
         return jsonify(result)

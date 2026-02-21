@@ -178,6 +178,16 @@ class CropDiseasePredictor:
         
         logger.info(f"Prediction: {predicted_class} with confidence {confidence:.4f}")
         
+        # Reject low-confidence predictions (likely not a valid crop image)
+        CONFIDENCE_THRESHOLD = 0.92
+        if confidence < CONFIDENCE_THRESHOLD:
+            logger.warning(f"Confidence {confidence:.4f} is below threshold {CONFIDENCE_THRESHOLD}. Image may not be a valid maize crop image.")
+            return {
+                "error": "This does not appear to be a valid maize/corn crop image. Please upload a clear image of a maize leaf.",
+                "confidence": confidence,
+                "note": "Image rejected due to low confidence"
+            }
+        
         # Determine if healthy or unhealthy
         is_healthy = "healthy" in predicted_class.lower()
         disease_name = predicted_class if not is_healthy else None
