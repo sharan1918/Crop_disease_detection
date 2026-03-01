@@ -37,27 +37,70 @@ class CropDiseasePredictor:
         logger.info("Starting model loading...")
         try:
             import json
-            # Load maize model
             base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            model_path = os.path.join(base_dir, 'Ml_Models', 'maize_disease_model.h5')
-            json_path = os.path.join(base_dir, 'Ml_Models', 'maize_class_indices.json')
             
-            if os.path.exists(model_path):
+            # Load maize model
+            maize_model_path = os.path.join(base_dir, 'Ml_Models', 'maize_disease_model.h5')
+            maize_json_path = os.path.join(base_dir, 'Ml_Models', 'maize_class_indices.json')
+            
+            if os.path.exists(maize_model_path):
                 try:
-                    logger.info(f"Loading maize model from {model_path}")
-                    self.maize_model = tf.keras.models.load_model(model_path)
+                    logger.info(f"Loading maize model from {maize_model_path}")
+                    self.maize_model = tf.keras.models.load_model(maize_model_path)
                     logger.info("Maize model loaded successfully")
                     
-                    with open(json_path, 'r') as f:
+                    with open(maize_json_path, 'r') as f:
                         indices = json.load(f)
                         self.maize_classes = [k for k, v in sorted(indices.items(), key=lambda item: item[1])]
                     logger.info(f"Maize classes loaded: {self.maize_classes}")
                 except Exception as e:
                     logger.error(f"Failed to load maize model: {e}")
-                    self.maize_model = None
-            else:
-                logger.warning(f"Maize model file not found: {model_path}")
-                
+            
+            # Load wheat model
+            wheat_model_path = os.path.join(base_dir, 'Ml_Models', 'wheat_disease_model.h5')
+            wheat_json_path = os.path.join(base_dir, 'Ml_Models', 'wheat_class_indices.json')
+            
+            if os.path.exists(wheat_model_path):
+                try:
+                    logger.info(f"Loading wheat model from {wheat_model_path}")
+                    self.wheat_model = tf.keras.models.load_model(wheat_model_path)
+                    logger.info("Wheat model loaded successfully")
+                    
+                    with open(wheat_json_path, 'r') as f:
+                        indices = json.load(f)
+                        self.wheat_classes = [k for k, v in sorted(indices.items(), key=lambda item: item[1])]
+                    logger.info(f"Wheat classes loaded: {self.wheat_classes}")
+                except Exception as e:
+                    logger.error(f"Failed to load wheat model: {e}")
+
+            # Load tomato model
+            tomato_model_path = os.path.join(base_dir, 'Ml_Models', 'tomato_disease_model.h5')
+            tomato_json_path = os.path.join(base_dir, 'Ml_Models', 'tomato_class_indices.json')
+            
+            if os.path.exists(tomato_model_path):
+                try:
+                    logger.info(f"Loading tomato model from {tomato_model_path}")
+                    self.tomato_model = tf.keras.models.load_model(tomato_model_path)
+                    logger.info("Tomato model loaded successfully")
+                    
+                    with open(tomato_json_path, 'r') as f:
+                        indices = json.load(f)
+                        self.tomato_classes = [k for k, v in sorted(indices.items(), key=lambda item: item[1])]
+                    logger.info(f"Tomato classes loaded: {self.tomato_classes}")
+                except Exception as e:
+                    logger.error(f"Failed to load tomato model: {e}")
+
+            # Warm-up predictions
+            logger.info("Warming up models...")
+            dummy_input = np.zeros((1, 224, 224, 3))
+            if self.maize_model is not None: self.maize_model.predict(dummy_input, verbose=0)
+            if self.wheat_model is not None: self.wheat_model.predict(dummy_input, verbose=0)
+            if self.tomato_model is not None: self.tomato_model.predict(dummy_input, verbose=0)
+            logger.info("Models warmed up")
+            
+        except Exception as e:
+            logger.exception(f"Error loading models: {e}")
+            
         except Exception as e:
             logger.exception(f"Error loading models: {e}")
     
@@ -71,10 +114,12 @@ class CropDiseasePredictor:
                 if img is None:
                     logger.error(f"Failed to load image: {image_path}")
                     return None
-                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
             else:
-                # Assume it's already a numpy array
+                # Assume it's already a numpy array (BGR from imdecode)
                 img = image_path
+            
+            # Convert BGR to RGB
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
             
             logger.debug(f"Original image shape: {img.shape}")
             
@@ -131,14 +176,19 @@ class CropDiseasePredictor:
         """Fallback prediction when model fails to load"""
         import random
         
-        classes = ["Blight", "Common_Rust", "Gray_Leaf_Spot", "Healthy"]
+        classes = ["Blight", "Common_Rust", "Gray_Leaf_Spot", "Healthy", "Others"]
         probabilities = [random.random() for _ in classes]
+        # Bias towards crop images for smoother demo, but allow others
+        probabilities[4] = probabilities[4] * 0.1 
         total = sum(probabilities)
         probabilities = [p/total for p in probabilities]
         
         predicted_class_idx = np.argmax(probabilities)
         predicted_class = classes[predicted_class_idx]
         confidence = float(probabilities[predicted_class_idx])
+
+        if predicted_class == "Others":
+            return {"error": f"The demo model for {crop_type} could not identify a valid leaf in this image. Please try Maize for full analysis."}
         
         health_status = "healthy" if predicted_class.lower() == "healthy" else "unhealthy"
         disease_name = None if health_status == "healthy" else predicted_class
@@ -180,21 +230,22 @@ class CropDiseasePredictor:
         
         # Check if the class is "Others" (non-crop image)
         if predicted_class.lower() == "others":
-            logger.warning(f"Image classified as 'Others' with confidence {confidence:.4f}. It is likely not a valid maize crop image.")
+            logger.warning(f"Image classified as 'Others' with confidence {confidence:.4f}.")
             return {
-                "error": "This does not appear to be a valid maize/corn crop image. Please upload a clear image of a maize leaf.",
+                "error": "This image does not appear to be a maize leaf. Please ensure the leaf is the main focus and well-lit.",
                 "confidence": confidence,
                 "note": "Image rejected because it was classified as 'Others' (non-crop)"
             }
 
-        # Reject low-confidence predictions (likely not a valid crop image)
-        CONFIDENCE_THRESHOLD = 0.80
+        # Reject extreme low-confidence predictions (likely not a valid crop image)
+        # Lowered threshold further to 0.40 to ensure we capture more unhealthy leaves
+        CONFIDENCE_THRESHOLD = 0.40
         if confidence < CONFIDENCE_THRESHOLD:
-            logger.warning(f"Confidence {confidence:.4f} is below threshold {CONFIDENCE_THRESHOLD}. Image may not be a valid maize crop image.")
+            logger.warning(f"Confidence {confidence:.4f} is below threshold {CONFIDENCE_THRESHOLD}.")
             return {
-                "error": "This does not appear to be a valid maize/corn crop image. Please upload a clear image of a maize leaf.",
+                "error": "The AI is uncertain about this diagnosis. Please try a clearer, more focused photo of the leaf.",
                 "confidence": confidence,
-                "note": "Image rejected due to low confidence"
+                "note": "Image rejected due to low confidence (below 0.40)"
             }
         
         # Determine if healthy or unhealthy
@@ -216,6 +267,130 @@ class CropDiseasePredictor:
         logger.info(f"Prediction result: {result}")
         return result
     
+    def predict_wheat(self, image_path):
+        """Predict wheat disease"""
+        logger.info(f"Predicting wheat disease for: {image_path}")
+        if self.wheat_model is None:
+            logger.error("Wheat model not loaded, cannot predict")
+            return {"error": "Wheat model not loaded"}
+        
+        # Preprocess image
+        img = self.preprocess_image(image_path)
+        if img is None:
+            logger.error("Failed to preprocess image")
+            return {"error": "Failed to preprocess image"}
+        
+        # Make prediction
+        logger.info("Running wheat model prediction...")
+        predictions = self.wheat_model.predict(img, verbose=0)
+        predicted_class_idx = np.argmax(predictions[0])
+        confidence = float(predictions[0][predicted_class_idx])
+        
+        # Get class name
+        predicted_class = self.wheat_classes[predicted_class_idx]
+        
+        logger.info(f"Wheat Prediction: {predicted_class} with confidence {confidence:.4f}")
+        
+        # Check if the class is "Others" (non-crop image)
+        if predicted_class.lower() == "others":
+            logger.warning(f"Image classified as 'Others' for wheat with confidence {confidence:.4f}.")
+            return {
+                "error": "This image does not appear to be a wheat leaf. Please ensure the leaf is the main focus and well-lit.",
+                "confidence": confidence,
+                "note": "Image rejected because it was classified as 'Others' (non-crop)"
+            }
+
+        # Reject low-confidence predictions
+        CONFIDENCE_THRESHOLD = 0.40
+        if confidence < CONFIDENCE_THRESHOLD:
+            logger.warning(f"Wheat confidence {confidence:.4f} is below threshold {CONFIDENCE_THRESHOLD}.")
+            return {
+                "error": "The AI is uncertain about this wheat diagnosis. Please try a clearer, more focused photo.",
+                "confidence": confidence,
+                "note": "Image rejected due to low confidence"
+            }
+        
+        # Determine if healthy or unhealthy
+        is_healthy = "healthy" in predicted_class.lower()
+        disease_name = predicted_class if not is_healthy else None
+        
+        # Get all probabilities
+        all_probabilities = {}
+        for i, class_name in enumerate(self.wheat_classes):
+            all_probabilities[class_name] = float(predictions[0][i])
+        
+        result = {
+            "crop_type": "wheat",
+            "health_status": "healthy" if is_healthy else "unhealthy",
+            "disease_name": disease_name,
+            "confidence": confidence,
+            "all_probabilities": all_probabilities
+        }
+        logger.info(f"Wheat prediction result: {result}")
+        return result
+
+    def predict_tomato(self, image_path):
+        """Predict tomato disease"""
+        logger.info(f"Predicting tomato disease for: {image_path}")
+        if self.tomato_model is None:
+            logger.error("Tomato model not loaded, cannot predict")
+            return {"error": "Tomato model not loaded"}
+        
+        # Preprocess image
+        img = self.preprocess_image(image_path)
+        if img is None:
+            logger.error("Failed to preprocess image")
+            return {"error": "Failed to preprocess image"}
+        
+        # Make prediction
+        logger.info("Running tomato model prediction...")
+        predictions = self.tomato_model.predict(img, verbose=0)
+        predicted_class_idx = np.argmax(predictions[0])
+        confidence = float(predictions[0][predicted_class_idx])
+        
+        # Get class name
+        predicted_class = self.tomato_classes[predicted_class_idx]
+        
+        logger.info(f"Tomato Prediction: {predicted_class} with confidence {confidence:.4f}")
+        
+        # Check if the class is "Others" (non-crop image)
+        if predicted_class.lower() == "others":
+            logger.warning(f"Image classified as 'Others' for tomato with confidence {confidence:.4f}.")
+            return {
+                "error": "This image does not appear to be a tomato leaf. Please ensure the leaf is the main focus and well-lit.",
+                "confidence": confidence,
+                "note": "Image rejected because it was classified as 'Others' (non-crop)"
+            }
+
+        # Reject low-confidence predictions
+        CONFIDENCE_THRESHOLD = 0.40
+        if confidence < CONFIDENCE_THRESHOLD:
+            logger.warning(f"Tomato confidence {confidence:.4f} is below threshold {CONFIDENCE_THRESHOLD}.")
+            return {
+                "error": "The AI is uncertain about this tomato diagnosis. Please try a clearer, more focused photo.",
+                "confidence": confidence,
+                "note": "Image rejected due to low confidence"
+            }
+        
+        # Determine if healthy or unhealthy
+        is_healthy = "healthy" in predicted_class.lower()
+        disease_name = predicted_class if not is_healthy else None
+        
+        # Get all probabilities
+        all_probabilities = {}
+        for i, class_name in enumerate(self.tomato_classes):
+            all_probabilities[class_name] = float(predictions[0][i])
+        
+        result = {
+            "crop_type": "tomato",
+            "health_status": "healthy" if is_healthy else "unhealthy",
+            "disease_name": disease_name,
+            "confidence": confidence,
+            "all_probabilities": all_probabilities
+        }
+        logger.info(f"Tomato prediction result: {result}")
+        return result
+    
     def predict(self, image_path, crop_type=None):
         """Predict disease for given image"""
         logger.info(f"Predict called with crop_type={crop_type}")
@@ -225,12 +400,23 @@ class CropDiseasePredictor:
             self.load_models()
         
         if crop_type:
-            if crop_type.lower() == "wheat":
-                logger.info("Using wheat prediction")
-                return self.predict_wheat(image_path)
-            elif crop_type.lower() in ["maize", "corn"]:
+            if crop_type.lower() in ["maize", "corn"]:
                 logger.info("Using maize prediction")
                 return self.predict_maize(image_path)
+            elif crop_type.lower() == "wheat":
+                logger.info("Using wheat prediction")
+                if self.wheat_model:
+                    return self.predict_wheat(image_path)
+                else:
+                    logger.warning("Wheat model not loaded, showing fallback")
+                    return self._fallback_prediction("wheat")
+            elif crop_type.lower() == "tomato":
+                logger.info("Using tomato prediction")
+                if self.tomato_model:
+                    return self.predict_tomato(image_path)
+                else:
+                    logger.warning("Tomato model not loaded, showing fallback")
+                    return self._fallback_prediction("tomato")
             else:
                 logger.error(f"Unsupported crop type: {crop_type}")
                 return {"error": f"Unsupported crop type: {crop_type}"}

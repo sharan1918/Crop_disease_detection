@@ -1,12 +1,18 @@
-from flask import Flask, request, jsonify, render_template
+from flask import Flask, request, jsonify, render_template, redirect, url_for, flash
 from flask_cors import CORS
+from flask_sqlalchemy import SQLAlchemy
+from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
+from werkzeug.security import generate_password_hash, check_password_hash
+from werkzeug.utils import secure_filename
 import os
 import tempfile
 import threading
 import logging
-from werkzeug.utils import secure_filename
 import uuid
+import datetime
 from inference import CropDiseasePredictor
+from yield_predictor import YieldPredictor
+
 
 # Configure logging
 logging.basicConfig(
@@ -15,338 +21,399 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except Exception:
-    pass
+# AI Intelligence Core
+import google.generativeai as genai
+from dotenv import load_dotenv
+
+load_dotenv()
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+if GOOGLE_API_KEY:
+    try:
+        genai.configure(api_key=GOOGLE_API_KEY)
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        logger.info("Gemini AI Engine Online")
+    except Exception as e:
+        logger.error(f"Failed to initialize Gemini: {e}")
+        model = None
+else:
+    logger.warning("GOOGLE_API_KEY not found. Gemini AI chat will be disabled.")
+    model = None
 
 app = Flask(__name__, template_folder='../templates')
-CORS(app)
-
-# Configuration
-app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
+app.config['SECRET_KEY'] = 'crop-secret-key-123'
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///database.db'
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
 app.config['UPLOAD_FOLDER'] = 'uploads'
-app.config['ALLOWED_EXTENSIONS'] = {'png', 'jpg', 'jpeg', 'gif'}
 
-# Create upload folder if it doesn't exist
+CORS(app)
+db = SQLAlchemy(app)
+login_manager = LoginManager()
+login_manager.init_app(app)
+login_manager.login_view = 'login'
+
+# Ensure upload directory exists
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
-# Initialize predictor
+# Database Models
+class User(UserMixin, db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(80), unique=True, nullable=False)
+    email = db.Column(db.String(120), unique=True, nullable=False)
+    phone = db.Column(db.String(20), unique=True)
+    password_hash = db.Column(db.String(128))
+    full_name = db.Column(db.String(100))
+    location = db.Column(db.String(100))
+    otp = db.Column(db.String(6))
+    otp_expiry = db.Column(db.DateTime)
+    created_at = db.Column(db.DateTime, default=datetime.datetime.utcnow)
+
+class UserSettings(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), unique=True)
+    settings_data = db.Column(db.Text, default='{}')
+
+class Prediction(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'))
+    crop_type = db.Column(db.String(50))
+    prediction_type = db.Column(db.String(20)) # 'disease' or 'yield'
+    result = db.Column(db.JSON)
+    timestamp = db.Column(db.DateTime, default=datetime.datetime.utcnow)
+
+# Load Models
 predictor = CropDiseasePredictor()
+yield_predictor = YieldPredictor()
 
 _model_load_lock = threading.Lock()
 _model_load_started = False
 
 def _load_models_background():
     try:
-        logger.info("Loading models in background...")
         predictor.load_models()
-        logger.info("Background model loading finished")
+        logger.info("Models loaded successfully in background")
     except Exception as e:
-        logger.error(f"Background model loading failed: {e}")
+        logger.error(f"Failed to load models: {e}")
 
-def ensure_models_loading():
-    global _model_load_started
-    if _model_load_started:
-        return
-    with _model_load_lock:
-        if _model_load_started:
-            return
-        _model_load_started = True
-        threading.Thread(target=_load_models_background, daemon=True).start()
+@login_manager.user_loader
+def load_user(user_id):
+    return User.query.get(int(user_id))
 
-_gemini_client = None
+# --- Auth Routes ---
+import re
+import random
 
-def get_gemini_client():
-    global _gemini_client
-    if _gemini_client is not None:
-        return _gemini_client
+def is_valid_phone(phone):
+    # Remove any non-digit characters for validation
+    digits = re.sub(r'\D', '', str(phone))
+    # Handle optional country code +91 or 0
+    if len(digits) == 12 and digits.startswith('91'):
+        digits = digits[2:]
+    elif len(digits) == 11 and digits.startswith('0'):
+        digits = digits[1:]
+    return len(digits) == 10 and digits[0] in '6789'
 
-    api_key = os.getenv('GEMINI_API_KEY') or os.getenv('GOOGLE_API_KEY')
-    if not api_key:
-        logger.warning("No Gemini API key found in environment")
-        return None
+@app.route('/api/login', methods=['POST'])
+def login():
+    data = request.get_json()
+    username = data.get('username')
+    password = data.get('password')
+    
+    if not username or not password:
+        return jsonify({"error": "Security Alert: All credentials are required."}), 400
+    
+    # Check by username or phone
+    user = User.query.filter((User.username == username) | (User.phone == username)).first()
+    
+    if user and check_password_hash(user.password_hash, password):
+        login_user(user)
+        return jsonify({
+            "message": "Authenticated",
+            "user": {"username": user.username, "full_name": user.full_name}
+        })
+    
+    return jsonify({"error": "Invalid Identity or Secret Key."}), 401
 
+@app.route('/api/register', methods=['POST'])
+def register():
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "No data provided"}), 400
+
+    username = data.get('username')
+    email = data.get('email')
+    phone = data.get('phone')
+    password = data.get('password')
+
+    if not all([username, email, phone, password]):
+        return jsonify({"error": "All fields are required"}), 400
+    
+    if not is_valid_phone(phone):
+        return jsonify({"error": "Please enter a valid 10-digit mobile number"}), 400
+
+    # Clean the phone number for storage (just 10 digits)
+    clean_phone = re.sub(r'\D', '', str(phone))[-10:]
+
+    if User.query.filter_by(username=username).first():
+        return jsonify({"error": "Username already exists"}), 400
+    
+    if User.query.filter_by(phone=clean_phone).first():
+        return jsonify({"error": "Phone number already registered"}), 400
+    
     try:
-        import google.generativeai as genai
-        genai.configure(api_key=api_key)
-        _gemini_client = genai
-        logger.info("Gemini client initialized successfully using google.generativeai")
-        return _gemini_client
-    except ImportError:
-        logger.warning("google.generativeai not available, trying google.genai")
-        try:
-            from google import genai
-            _gemini_client = genai.Client(api_key=api_key)
-            logger.info("Gemini client initialized successfully using google.genai")
-            return _gemini_client
-        except Exception as e:
-            logger.error(f"Failed to initialize Gemini client: {e}")
-            return None
+        user = User(
+            username=username,
+            email=email,
+            phone=clean_phone,
+            password_hash=generate_password_hash(password),
+            full_name=data.get('full_name', ''),
+            location=data.get('location', '')
+        )
+        db.session.add(user)
+        db.session.commit()
+        return jsonify({"message": "User registered successfully"})
     except Exception as e:
-        logger.error(f"Failed to initialize Gemini client: {e}")
-        return None
+        db.session.rollback()
+        logger.error(f"Registration Error: {e}")
+        return jsonify({"error": "Failed to create account. Database may need update."}), 500
 
-def allowed_file(filename):
-    """Check if file has allowed extension"""
-    return '.' in filename and \
-           filename.rsplit('.', 1)[1].lower() in app.config['ALLOWED_EXTENSIONS']
+@app.route('/api/logout')
+@login_required
+def logout():
+    logout_user()
+    return jsonify({"message": "Logged out successfully"})
 
+@app.route('/api/auth/status')
+def auth_status():
+    if current_user.is_authenticated:
+        return jsonify({
+            "isLoggedIn": True,
+            "user": {"username": current_user.username, "full_name": current_user.full_name}
+        })
+    return jsonify({"isLoggedIn": False})
+
+# --- Main Routes ---
 @app.route('/')
 def home():
-    """Serve the dashboard"""
     return render_template('index.html')
 
-@app.route('/api')
-def api_info():
-    """API information endpoint"""
-    return jsonify({
-        "message": "Crop Disease Classification API",
-        "version": "1.0",
-        "endpoints": {
-            "/predict": "POST - Predict crop disease from image",
-            "/predict_url": "POST - Predict from image URL", 
-            "/health": "GET - Check API health",
-            "/models/info": "GET - Model information",
-            "/chat": "POST - Gemini chat endpoint"
-        }
-    })
-
-@app.route('/health')
+@app.route('/api/health')
 def health_check():
-    """Health check endpoint"""
-    ensure_models_loading()
     return jsonify({
         "status": "healthy",
         "models_loaded": {
+            "maize": predictor.maize_model is not None,
             "wheat": predictor.wheat_model is not None,
-            "maize": predictor.maize_model is not None
+            "tomato": predictor.tomato_model is not None
         }
     })
 
-@app.route('/predict', methods=['POST'])
+@app.route('/api/predict', methods=['POST'])
 def predict():
-    """Predict crop disease from uploaded image"""
-    logger.info("Received prediction request")
-    ensure_models_loading()
+    file = request.files.get('file')
+    if not file:
+        return jsonify({"error": "No image uploaded"}), 400
     
-    # Check if file is in request
-    if 'file' not in request.files:
-        logger.warning("No file provided in request")
-        return jsonify({"error": "No file provided"}), 400
+    crop_type = request.form.get('crop_type', 'maize')
     
-    file = request.files['file']
-    
-    # Check if file is selected
-    if file.filename == '':
-        logger.warning("No file selected")
-        return jsonify({"error": "No file selected"}), 400
-    
-    # Check file type
-    if not allowed_file(file.filename):
-        logger.warning(f"Invalid file type: {file.filename}")
-        return jsonify({"error": "File type not allowed. Use: png, jpg, jpeg, gif"}), 400
-    
-    # Get crop type from form data (optional)
-    crop_type = request.form.get('crop_type', None)
-    logger.info(f"Processing file: {file.filename}, crop_type: {crop_type}")
-    
+    # Process from memory for speed
     try:
-        # Save uploaded file temporarily
-        filename = secure_filename(file.filename)
-        unique_filename = f"{uuid.uuid4()}_{filename}"
-        filepath = os.path.join(app.config['UPLOAD_FOLDER'], unique_filename)
-        file.save(filepath)
-        logger.info(f"Saved file to: {filepath}")
+        import numpy as np
+        import cv2
         
-        # Make prediction
-        logger.info("Starting prediction...")
-        result = predictor.predict(filepath, crop_type)
-        logger.info(f"Prediction result: {result}")
+        filestr = file.read()
+        npimg = np.frombuffer(filestr, np.uint8)
+        img = cv2.imdecode(npimg, cv2.IMREAD_COLOR)
         
-        # Clean up temporary file
-        os.remove(filepath)
-        logger.info(f"Cleaned up file: {filepath}")
-        
-        # Check for prediction errors
-        if "error" in result:
-            logger.error(f"Prediction error: {result['error']}")
-            # If it's a rejection (not a valid crop image), return 400 instead of 500
-            if result.get("note") == "Image rejected due to low confidence":
-                return jsonify(result), 400
-            return jsonify(result), 500
-        
-        return jsonify(result)
-        
-    except Exception as e:
-        logger.exception(f"Prediction failed: {e}")
-        # Clean up file if it exists
-        if 'filepath' in locals() and os.path.exists(filepath):
-            os.remove(filepath)
-        
-        return jsonify({"error": f"Prediction failed: {str(e)}"}), 500
+        if img is None:
+            return jsonify({"error": "Failed to decode image"}), 400
 
-@app.route('/predict_url', methods=['POST'])
-def predict_from_url():
-    """Predict crop disease from image URL"""
-    logger.info("Received predict_url request")
-    ensure_models_loading()
-    
+        # Predict directly using the decoded image
+        result = predictor.predict(img, crop_type)
+        
+        # Save history in background to avoid delaying response
+        if current_user.is_authenticated and "error" not in result:
+            def save_history(uid, ctype, res):
+                with app.app_context():
+                    prediction = Prediction(
+                        user_id=uid,
+                        crop_type=ctype,
+                        prediction_type='disease',
+                        result=res
+                    )
+                    db.session.add(prediction)
+                    db.session.commit()
+            
+            threading.Thread(target=save_history, args=(current_user.id, crop_type, result), daemon=True).start()
+            
+        return jsonify(result)
+    except Exception as e:
+        logger.error(f"Prediction Error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/predict_yield', methods=['POST'])
+def predict_yield():
     data = request.get_json()
+    try:
+        result = yield_predictor.predict(data)
+        
+        # Save history if logged in
+        if current_user.is_authenticated:
+            # Handle multiple crops if applicable
+            crops_list = data.get('crops', [])
+            crop_name = ", ".join(crops_list) if isinstance(crops_list, list) else str(crops_list)
+            
+            prediction = Prediction(
+                user_id=current_user.id,
+                crop_type=crop_name,
+                prediction_type='yield',
+                result=result
+            )
+            db.session.add(prediction)
+            db.session.commit()
+            
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/history')
+@login_required
+def get_history():
+    history = Prediction.query.filter_by(user_id=current_user.id).order_by(Prediction.timestamp.desc()).limit(20).all()
+    return jsonify([{
+        "crop_type": h.crop_type,
+        "type": h.prediction_type,
+        "result": h.result,
+        "timestamp": h.timestamp.strftime('%Y-%m-%d %H:%M')
+    } for h in history])
+
+@app.route('/api/stats')
+def get_stats():
+    # Public stats mockup
+    return jsonify({
+        "total_farmers": User.query.count() + 1500, # Mocked base + real
+        "predictions_today": 45,
+        "active_regions": ["Maharashtra", "Punjab", "Karnataka"]
+    })
+
+@app.route('/api/chat', methods=['POST'])
+def chat():
+    data = request.get_json()
+    user_message = data.get('message')
+    context = data.get('context')
     
-    if not data or 'image_url' not in data:
-        logger.warning("No image_url provided")
-        return jsonify({"error": "image_url is required"}), 400
+    if not user_message:
+        return jsonify({"error": "No message provided"}), 400
     
-    image_url = data['image_url']
-    crop_type = data.get('crop_type', None)
-    logger.info(f"Downloading image from: {image_url}, crop_type: {crop_type}")
+    if not model:
+        # Static context-aware fallback
+        fallback = "I am currently in offline mode."
+        if context:
+            fallback = f"I see you are analyzing {context.get('crop_type')} with {context.get('disease_name', 'potential issues')}. Please consult a local expert."
+        return jsonify({"response": fallback})
     
     try:
-        import requests
-        from io import BytesIO
-        
-        # Download image from URL
-        logger.info("Downloading image...")
-        response = requests.get(image_url, timeout=30)
-        response.raise_for_status()
-        logger.info(f"Downloaded {len(response.content)} bytes")
-        
-        # Save to temporary file
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as tmp_file:
-            tmp_file.write(response.content)
-            tmp_filepath = tmp_file.name
-        logger.info(f"Saved to temp file: {tmp_filepath}")
-        
-        # Make prediction
-        logger.info("Starting prediction...")
-        result = predictor.predict(tmp_filepath, crop_type)
-        logger.info(f"Prediction result: {result}")
-        
-        # Clean up temporary file
-        os.remove(tmp_filepath)
-        
-        # Check for prediction errors
-        if "error" in result:
-            logger.error(f"Prediction error: {result['error']}")
-            return jsonify(result), 500
-        
-        return jsonify(result)
-        
-    except requests.RequestException as e:
-        logger.error(f"Failed to download image: {e}")
-        return jsonify({"error": f"Failed to download image: {str(e)}"}), 400
-    except Exception as e:
-        logger.exception(f"Prediction failed: {e}")
-        # Clean up file if it exists
-        if 'tmp_filepath' in locals() and os.path.exists(tmp_filepath):
-            os.remove(tmp_filepath)
-        
-        return jsonify({"error": f"Prediction failed: {str(e)}"}), 500
+        # Add context to prompt if available
+        context_str = ""
+        if context:
+            status = context.get('health_status', 'unhealthy')
+            disease = context.get('disease_name', 'unspecified symptoms')
+            context_str = f"[CONTEXT: Farmer has scanned {context.get('crop_type')}. Status: {status}. Detected: {disease}.] "
 
-@app.route('/models/info')
-def models_info():
-    """Get information about available models"""
-    ensure_models_loading()
-    info = {
-        "wheat": {
-            "loaded": predictor.wheat_model is not None,
-            "classes": predictor.wheat_classes if predictor.wheat_classes else []
+        prompt = f"You are an expert AI Crop Doctor for AgriQuest. {context_str} Answer this farmer's query concisely and scientifically: {user_message}"
+        response = model.generate_content(prompt)
+        return jsonify({"response": response.text})
+    except Exception as e:
+        logger.error(f"Chat Error: {e}")
+        return jsonify({"error": "Intelligence Core failure. Please try later."}), 500
+
+@app.route('/api/experts')
+def get_experts():
+    # In a real app, this would query a DB based on lat/lon
+    # Here we return a list of experts with mock distances
+    lat = request.args.get('lat')
+    lon = request.args.get('lon')
+    
+    # Mock data
+    experts = [
+        {
+            "name": "Dr. Rajesh Kumar",
+            "specialty": "Soil Pathologist",
+            "rating": "4.9",
+            "experience": "12Y",
+            "image": "https://ui-avatars.com/api/?name=Rajesh+Kumar&background=0D8ABC&color=fff",
+            "distance": "1.2 km" if lat else "Nearby"
         },
+        {
+            "name": "Anjali Mehra",
+            "specialty": "Maize Specialist",
+            "rating": "4.8",
+            "experience": "8Y",
+            "image": "https://ui-avatars.com/api/?name=Anjali+Mehra&background=E10000&color=fff",
+            "distance": "3.5 km" if lat else "Nearby"
+        },
+        {
+            "name": "Prof. S. Swaminathan",
+            "specialty": "Cereal Pathologist",
+            "rating": "5.0",
+            "experience": "25Y",
+            "image": "https://ui-avatars.com/api/?name=S+Swaminathan&background=00A36C&color=fff",
+            "distance": "5.1 km" if lat else "Nearby"
+        }
+    ]
+    return jsonify(experts)
+
+@app.route('/api/models/info')
+def models_info():
+    return jsonify({
         "maize": {
             "loaded": predictor.maize_model is not None,
-            "classes": predictor.maize_classes if predictor.maize_classes else []
+            "classes": predictor.maize_classes if predictor.maize_classes else ["Blight", "Rust", "Spot", "Healthy"]
+        },
+        "wheat": {
+            "loaded": predictor.wheat_model is not None,
+            "classes": predictor.wheat_classes if predictor.wheat_classes else ["Smut", "Yellow Rust", "Healthy"]
+        },
+        "tomato": {
+            "loaded": predictor.tomato_model is not None,
+            "classes": predictor.tomato_classes if predictor.tomato_classes else ["Leaf Blight", "Bacterial Spot", "Healthy"]
         }
-    }
+    })
+
+import json
+
+@app.route('/api/settings', methods=['GET'])
+@login_required
+def get_settings():
+    settings = UserSettings.query.filter_by(user_id=current_user.id).first()
+    if settings:
+        return jsonify({"settings": json.loads(settings.settings_data)})
+    return jsonify({"settings": {}})
+
+@app.route('/api/settings', methods=['POST'])
+@login_required
+def update_settings():
+    data = request.get_json()
+    settings = UserSettings.query.filter_by(user_id=current_user.id).first()
     
-    return jsonify(info)
-
-@app.route('/chat', methods=['POST'])
-def chat():
-    ensure_models_loading()
-
-    data = request.get_json(silent=True) or {}
-    message = (data.get('message') or '').strip()
-    analysis_result = data.get('analysis_result', None)
-
-    if not message:
-        return jsonify({"error": "message is required"}), 400
-
-    client = get_gemini_client()
-    if client is None:
-        return jsonify({"error": "Gemini API key not configured. Set GEMINI_API_KEY (or GOOGLE_API_KEY) in environment."}), 503
-
-    model = os.getenv('GEMINI_MODEL') or 'gemini-2.0-flash'
-
-    context_block = ""
-    if isinstance(analysis_result, dict) and analysis_result:
-        crop_type = analysis_result.get('crop_type')
-        health_status = analysis_result.get('health_status')
-        disease_name = analysis_result.get('disease_name')
-        confidence = analysis_result.get('confidence')
-        context_block = (
-            "Latest classifier result (may be incomplete):\n"
-            f"- crop_type: {crop_type}\n"
-            f"- health_status: {health_status}\n"
-            f"- disease_name: {disease_name}\n"
-            f"- confidence: {confidence}\n"
-        )
-
-    system_text = (
-        "You are an assistant for a crop disease classification dashboard. "
-        "Answer questions about crop diseases, symptoms, prevention, and how to interpret the model's result. "
-        "If the user asks for medical or unsafe chemical advice, provide general safe guidance and recommend local agricultural extension services. "
-        "Be concise and practical."
-    )
-
-    prompt = f"{system_text}\n\n{context_block}\nUser question: {message}"
-
-    try:
-        logger.info(f"Sending request to Gemini model: {model}")
+    if settings:
+        # Merge new data with existing
+        existing = json.loads(settings.settings_data)
+        existing.update(data)
+        settings.settings_data = json.dumps(existing)
+    else:
+        settings = UserSettings(user_id=current_user.id, settings_data=json.dumps(data))
+        db.session.add(settings)
         
-        # Try using google.generativeai first (older but stable SDK)
-        if hasattr(client, 'GenerativeModel'):
-            gemini_model = client.GenerativeModel(model)
-            response = gemini_model.generate_content(prompt)
-            text = response.text
-        else:
-            # Fallback to google.genai (newer unified SDK)
-            response = client.models.generate_content(model=model, contents=prompt)
-            text = getattr(response, 'text', None)
-            if not text:
-                text = str(response)
-        
-        logger.info("Gemini request successful")
-        return jsonify({"answer": text})
-    except Exception as e:
-        logger.exception(f"Gemini request failed: {e}")
-        return jsonify({"error": f"Gemini request failed: {str(e)}"}), 500
+    db.session.commit()
+    return jsonify({"message": "Settings updated successfully", "settings": json.loads(settings.settings_data)})
 
-@app.errorhandler(413)
-def too_large(e):
-    """Handle file too large error"""
-    return jsonify({"error": "File too large. Maximum size is 16MB"}), 413
-
-@app.errorhandler(404)
-def not_found(e):
-    """Handle 404 errors"""
-    return jsonify({"error": "Endpoint not found"}), 404
-
-@app.errorhandler(500)
-def internal_error(e):
-    """Handle 500 errors"""
-    return jsonify({"error": "Internal server error"}), 500
-
+# Initialize DB and run
 if __name__ == '__main__':
-    logger.info("Starting Crop Disease Classification API...")
-    logger.info("Available endpoints:")
-    logger.info("  POST /predict - Upload image file")
-    logger.info("  POST /predict_url - Predict from image URL")
-    logger.info("  GET /health - Health check")
-    logger.info("  GET /models/info - Model information")
-    logger.info("API will be available at: http://localhost:5000")
-
-    ensure_models_loading()
-     
+    with app.app_context():
+        db.create_all()
+    
+    # Start background model loading
+    threading.Thread(target=_load_models_background, daemon=True).start()
+    
     app.run(host='0.0.0.0', port=3000, debug=True)
