@@ -27,6 +27,7 @@ dependencies = [
     "python-dotenv>=1.0.1",
     "flask-sqlalchemy",
     "flask-login",
+    "groq>=1.0.0",
 ]
 requires-python = ">=3.9"
 readme = "README.md"

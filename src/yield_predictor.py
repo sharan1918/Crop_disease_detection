@@ -37,7 +37,21 @@ class YieldPredictor:
         soil_factor = soil_factors.get(soil_type, 1.0)
 
         # Organic matter factor
-        om_factor = 0.8 + (min(om, 5.0) / 10.0) 
+        om_factor = 0.8 + (min(om, 5.0) / 10.0)
+
+        # Irrigation factor — drip is most efficient
+        irrigation = data.get('irrigation', 'rainfed').lower()
+        irrigation_factors = {"drip": 1.2, "sprinkler": 1.1, "flood": 1.0, "rainfed": 0.85}
+        irrigation_factor = irrigation_factors.get(irrigation, 0.9)
+
+        # Season factor — crop-season compatibility
+        season = data.get('season', 'kharif').lower()
+        # Season suitability per crop (1.0 = ideal, lower = suboptimal)
+        season_crop_compat = {
+            "kharif": {"maize": 1.15, "wheat": 0.7, "tomato": 1.1, "paddy": 1.2},
+            "rabi":   {"maize": 0.75, "wheat": 1.2, "tomato": 1.0, "paddy": 0.6},
+            "zaid":   {"maize": 0.85, "wheat": 0.6, "tomato": 1.15, "paddy": 0.8}
+        }
 
         # Base Costs per Acre (INR) - Mocked for Indian context
         crop_costs = {
@@ -49,6 +63,9 @@ class YieldPredictor:
         for crop_type in crops:
             crop_type = crop_type.lower()
             yield_per_hectare = self.base_yields.get(crop_type, 2.5)
+
+            # Season compatibility for this specific crop
+            season_factor = season_crop_compat.get(season, {}).get(crop_type, 0.9)
             
             # Multipliers
             rainfall_factor = 1.0 - abs(rainfall - 950) / 2500
@@ -57,7 +74,7 @@ class YieldPredictor:
             ph_factor = 1.0 - abs(ph - 6.8) / 12
             fert_factor = (n/120 + p/60 + k/60) / 3.0
             
-            multiplier = rainfall_factor * temp_factor * ph_factor * fert_factor * soil_factor * om_factor * humidity_factor
+            multiplier = rainfall_factor * temp_factor * ph_factor * fert_factor * soil_factor * om_factor * humidity_factor * irrigation_factor * season_factor
             
             final_yield_tons = yield_per_hectare * (area / 2.471) * multiplier
             final_yield_tons = max(0.1, final_yield_tons)
@@ -96,6 +113,13 @@ class YieldPredictor:
         if ph < 6: insights.append("Soil Acidity: Apply 500kg/acre of Lime to normalize pH.")
         if rainfall < 700: insights.append("Water Stress: Supplement with 2 extra irrigation cycles.")
         if om < 1.5: insights.append("Soil Health: Integrate green manure or compost.")
+        if irrigation == 'rainfed': insights.append("Irrigation Upgrade: Switch to drip for 15-20% higher yield.")
+        if irrigation == 'flood': insights.append("Water Efficiency: Consider drip/sprinkler to reduce wastage by 40%.")
+        if season == 'kharif' and 'wheat' in [c.lower() for c in crops]:
+            insights.append("Season Mismatch: Wheat performs better in Rabi (Nov-Mar).")
+        if season == 'rabi' and 'maize' in [c.lower() for c in crops]:
+            insights.append("Season Mismatch: Maize yields higher in Kharif (Jun-Oct).")
+        if humidity > 85: insights.append("Disease Alert: High humidity increases fungal infection risk.")
         if not insights: insights.append("Ideal conditions: Maintain current fertilization schedule.")
 
         return {
@@ -104,7 +128,7 @@ class YieldPredictor:
             "total_profit": sum(r['profit'] for r in results),
             "suitability_score": round(max(0, min(100, multiplier * 100)), 1),
             "risk_level": risk_level,
-            "insights": insights[:3],
+            "insights": insights[:5],
             "factors": {
                 "rainfall": round(rainfall_factor, 2),
                 "temperature": round(temp_factor, 2),
@@ -112,7 +136,9 @@ class YieldPredictor:
                 "ph": round(ph_factor, 2),
                 "nutrients": round(fert_factor, 2),
                 "soil": round(soil_factor, 2),
-                "organic": round(om_factor, 2)
+                "organic": round(om_factor, 2),
+                "irrigation": round(irrigation_factor, 2),
+                "season": round(season_factor, 2)
             },
             "charts": {
                 "historical": [round(final_yield_tons * x, 2) for x in [0.85, 0.92, 1.05, 0.98, 1.0]],

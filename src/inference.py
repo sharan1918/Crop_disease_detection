@@ -27,10 +27,13 @@ class CropDiseasePredictor:
     def __init__(self):
         self.wheat_model = None
         self.maize_model = None
+        self.tomato_model = None
         self.wheat_classes = None
         self.maize_classes = None
+        self.tomato_classes = None
         self.wheat_label_encoder = None
         self.maize_label_encoder = None
+        self.tomato_label_encoder = None
         
     def load_models(self):
         """Load trained models and label encoders"""
@@ -238,14 +241,14 @@ class CropDiseasePredictor:
             }
 
         # Reject extreme low-confidence predictions (likely not a valid crop image)
-        # Lowered threshold further to 0.40 to ensure we capture more unhealthy leaves
-        CONFIDENCE_THRESHOLD = 0.40
+        # Increased threshold to 0.70 to ensure we reject non-crop images like hands/backgrounds
+        CONFIDENCE_THRESHOLD = 0.70
         if confidence < CONFIDENCE_THRESHOLD:
             logger.warning(f"Confidence {confidence:.4f} is below threshold {CONFIDENCE_THRESHOLD}.")
             return {
-                "error": "The AI is uncertain about this diagnosis. Please try a clearer, more focused photo of the leaf.",
+                "error": "The AI is uncertain about this diagnosis. Please ensure the leaf is the main focus, well-lit, and try again.",
                 "confidence": confidence,
-                "note": "Image rejected due to low confidence (below 0.40)"
+                "note": f"Image rejected due to low confidence (below {CONFIDENCE_THRESHOLD})"
             }
         
         # Determine if healthy or unhealthy
@@ -301,13 +304,13 @@ class CropDiseasePredictor:
             }
 
         # Reject low-confidence predictions
-        CONFIDENCE_THRESHOLD = 0.40
+        CONFIDENCE_THRESHOLD = 0.70
         if confidence < CONFIDENCE_THRESHOLD:
             logger.warning(f"Wheat confidence {confidence:.4f} is below threshold {CONFIDENCE_THRESHOLD}.")
             return {
-                "error": "The AI is uncertain about this wheat diagnosis. Please try a clearer, more focused photo.",
+                "error": "The AI is uncertain about this wheat diagnosis. Please ensure the leaf is well-lit and the camera is focused.",
                 "confidence": confidence,
-                "note": "Image rejected due to low confidence"
+                "note": f"Image rejected due to low confidence (below {CONFIDENCE_THRESHOLD})"
             }
         
         # Determine if healthy or unhealthy
@@ -363,13 +366,13 @@ class CropDiseasePredictor:
             }
 
         # Reject low-confidence predictions
-        CONFIDENCE_THRESHOLD = 0.40
+        CONFIDENCE_THRESHOLD = 0.70
         if confidence < CONFIDENCE_THRESHOLD:
             logger.warning(f"Tomato confidence {confidence:.4f} is below threshold {CONFIDENCE_THRESHOLD}.")
             return {
-                "error": "The AI is uncertain about this tomato diagnosis. Please try a clearer, more focused photo.",
+                "error": "The AI is uncertain about this tomato diagnosis. Please ensure the leaf is focused and well-lit.",
                 "confidence": confidence,
-                "note": "Image rejected due to low confidence"
+                "note": f"Image rejected due to low confidence (below {CONFIDENCE_THRESHOLD})"
             }
         
         # Determine if healthy or unhealthy
